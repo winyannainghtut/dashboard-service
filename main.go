@@ -9,6 +9,7 @@ import (
 	"expvar"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -48,7 +49,11 @@ func main() {
 	mux.HandleFunc("/health", HealthHandler)
 	mux.HandleFunc("/health/api", HealthAPIHandler(failTrack))
 	mux.Handle("/metrics", expvar.Handler())
-	mux.Handle("/", http.FileServer(http.FS(staticFiles)))
+	assetsFS, err := fs.Sub(staticFiles, "assets")
+	if err != nil {
+		log.Fatal(err)
+	}
+	mux.Handle("/", http.FileServer(http.FS(assetsFS)))
 
 	log.Fatal(http.ListenAndServe(portWithColon, mux))
 }
