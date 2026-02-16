@@ -38,3 +38,37 @@ Output can be found in `dist`.
 ### Dependencies
 
 This application assumes that a counting service is running on `localhost:9001`.
+
+## Docker Support
+
+### Prerequisites
+- Docker installed (Desktop or Engine)
+
+### Building the Image
+```bash
+docker build -t dashboard-service .
+```
+
+### Running the Container
+Run the container mapping port 8080 (host) to 80 (container):
+```bash
+docker run -d -p 8080:80 --name dashboard -e COUNTING_SERVICE_URL="http://<counting-service-host>:<port>" dashboard-service
+```
+*Note: Replace `<counting-service-host>:<port>` with the actual address of the counting service. If running locally with another container, use the Docker network alias or host IP.*
+
+### Debugging
+The container image is based on Ubuntu and includes helpful network debugging tools:
+- `curl`
+- `netstat`
+- `nslookup`
+- `tcpdump`
+- `bash`
+
+To access the shell for debugging:
+```bash
+docker exec -it dashboard bash
+```
+
+### CI/CD
+A GitHub Actions workflow is included in `.github/workflows/docker-publish.yml` to automatically build and push the image to Docker Hub on commits to `main` or `master`.
+Requires `DOCKER_USERNAME` and `DOCKER_PASSWORD` repository secrets.
