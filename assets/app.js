@@ -15,14 +15,38 @@ function disconnectedFromBackendService(message) {
   $("#connection-status").text("Counting Service is Unreachable");
 }
 
-socket.on("disconnect", disconnected);
-socket.on("connect_error", disconnected);
-socket.on("connect_timeout", disconnected);
-socket.on("error", disconnected);
-socket.on("reconnect_error", disconnected);
-socket.on("reconnect_failed", disconnected);
-socket.on("reconnect_attempt", disconnected);
-socket.on("reconnecting", disconnected);
+socket.on("disconnect", function (reason) {
+  console.log("Disconnected:", reason);
+  disconnected();
+});
+socket.on("connect_error", function (error) {
+  console.log("Connect Error:", error);
+  disconnected();
+});
+socket.on("connect_timeout", function (timeout) {
+  console.log("Connect Timeout:", timeout);
+  disconnected();
+});
+socket.on("error", function (error) {
+  console.log("Socket Error:", error);
+  disconnected();
+});
+socket.on("reconnect_error", function (error) {
+  console.log("Reconnect Error:", error);
+  disconnected();
+});
+socket.on("reconnect_failed", function () {
+  console.log("Reconnect Failed");
+  disconnected();
+});
+socket.on("reconnect_attempt", function () {
+  console.log("Attempting Reconnect...");
+  disconnected();
+});
+socket.on("reconnecting", function (attempt) {
+  console.log("Reconnecting... Attempt #" + attempt);
+  disconnected();
+});
 
 // Listen for messages
 socket.on("message", function (message) {
@@ -54,9 +78,9 @@ socket.on("connect", function () {
 
   // Broadcast a message
   function broadcastMessage() {
+    if (!socket.connected) return;
     socket.emit("send", { "message": "get count" }, function (result) {
-      // Silent success, reload again
-      setTimeout(broadcastMessage, 200) // In milliseconds
+      setTimeout(broadcastMessage, 1000) // Increased to 1s to reduce load
     });
   }
   broadcastMessage();
