@@ -4,25 +4,31 @@
 package main
 
 import (
+	"embed"
 	"encoding/json"
 	"expvar"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"sync"
 	"time"
 
-	rice "github.com/GeertJohan/go.rice"
-	"github.com/gorilla/mux"
-	gosocketio "github.com/graarh/golang-socketio"
-	"github.com/graarh/golang-socketio/transport"
+	"github.com/gorilla/websocket"
 )
+
+//go:embed assets
+var staticFiles embed.FS
 
 var countingServiceURL string
 var port string
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true // Allow all origins for this demo
+	},
+}
 
 func main() {
 	port = getEnvOrDefault("PORT", "80")
@@ -37,14 +43,14 @@ func main() {
 
 	failTrack := new(failureTracker)
 
-	router := mux.NewRouter()
-	router.PathPrefix("/socket.io/").Handler(startWebsocket(failTrack))
-	router.HandleFunc("/health", HealthHandler)
-	router.HandleFunc("/health/api", HealthAPIHandler(failTrack))
-	router.Handle("/metrics", expvar.Handler())
-	router.PathPrefix("/").Handler(http.FileServer(rice.MustFindBox("assets").HTTPBox()))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", wsHandler(failTrack))
+	mux.HandleFunc("/health", HealthHandler)
+	mux.HandleFunc("/health/api", HealthAPIHandler(failTrack))
+	mux.Handle("/metrics", expvar.Handler())
+	mux.Handle("/", http.FileServer(http.FS(staticFiles)))
 
-	log.Fatal(http.ListenAndServe(portWithColon, router))
+	log.Fatal(http.ListenAndServe(portWithColon, mux))
 }
 
 func getEnvOrDefault(key, fallback string) string {
@@ -101,50 +107,59 @@ func HealthAPIHandler(ft *failureTracker) http.HandlerFunc {
 	}
 }
 
-func startWebsocket(ft *failureTracker) *gosocketio.Server {
-	server := gosocketio.NewServer(transport.GetDefaultWebsocketTransport())
-
-	fmt.Println("Starting websocket server...")
-	server.On(gosocketio.OnConnection, handleConnectionFunc(ft))
-	server.On("send", handleSendFunc(ft))
-
-	return server
-}
-
-func handleConnectionFunc(ft *failureTracker) func(c *gosocketio.Channel) {
-	return func(c *gosocketio.Channel) {
-		fmt.Println("New client connected")
-		c.Join("visits")
-		handleSendFunc(ft)(c, Count{})
-	}
-}
-
-func handleSendFunc(ft *failureTracker) func(*gosocketio.Channel, Count) string {
-	return func(c *gosocketio.Channel, msg Count) string {
-		count, err := getAndParseCount()
+// wsHandler handles WebSocket connections from the dashboard frontend.
+func wsHandler(ft *failureTracker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			count = Count{Count: -1, Message: err.Error(), Hostname: "[Unreachable]"}
-			ft.Count(false)
+			log.Println("WebSocket upgrade error:", err)
+			return
 		}
-		// Get local hostname
-		localHostname, err := os.Hostname()
-		if err != nil {
+		defer conn.Close()
+
+		fmt.Println("New WebSocket client connected")
+
+		// Get local hostname once per connection
+		localHostname, hostnameErr := os.Hostname()
+		if hostnameErr != nil {
 			localHostname = "Unknown"
 		}
-		count.DashboardHostname = localHostname
 
-		fmt.Println("Fetched count", count.Count)
-		c.Ack("message", count, time.Second*10)
-		ft.Count(true)
-		return "OK"
+		// Read messages from client and respond with count
+		for {
+			_, _, err := conn.ReadMessage()
+			if err != nil {
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+					log.Println("WebSocket read error:", err)
+				}
+				break
+			}
+
+			count, fetchErr := getAndParseCount()
+			if fetchErr != nil {
+				count = Count{Count: -1, Message: fetchErr.Error(), Hostname: "[Unreachable]"}
+				ft.Count(false)
+			} else {
+				ft.Count(true)
+			}
+			count.DashboardHostname = localHostname
+
+			fmt.Println("Fetched count", count.Count)
+
+			response, _ := json.Marshal(count)
+			if writeErr := conn.WriteMessage(websocket.TextMessage, response); writeErr != nil {
+				log.Println("WebSocket write error:", writeErr)
+				break
+			}
+		}
 	}
 }
 
 // Count stores a number that is being counted and other data to send to
 // websocket clients.
 type Count struct {
-	Count    int    `json:"count"`
-	Message  string `json:"message"`
+	Count             int    `json:"count"`
+	Message           string `json:"message"`
 	Hostname          string `json:"hostname"`
 	DashboardHostname string `json:"dashboard_hostname"`
 }
@@ -152,8 +167,6 @@ type Count struct {
 func getAndParseCount() (Count, error) {
 	url := countingServiceURL
 
-	// NOTE: We use short timeouts so round robin load balancing
-	// of services can be experienced during lab demos.
 	tr := &http.Transport{
 		IdleConnTimeout: time.Second * 1,
 	}
@@ -175,7 +188,7 @@ func getAndParseCount() (Count, error) {
 		return Count{}, getErr
 	}
 
-	body, readErr := ioutil.ReadAll(res.Body)
+	body, readErr := io.ReadAll(res.Body)
 	if readErr != nil {
 		return Count{}, readErr
 	}
@@ -185,10 +198,8 @@ func getAndParseCount() (Count, error) {
 }
 
 func parseCount(body []byte) (Count, error) {
-	textBytes := []byte(body)
-
 	count := Count{}
-	err := json.Unmarshal(textBytes, &count)
+	err := json.Unmarshal(body, &count)
 	if err != nil {
 		fmt.Println(err)
 		return count, err

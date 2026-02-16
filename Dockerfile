@@ -1,12 +1,13 @@
-FROM golang:1.17 AS builder
+FROM golang:1.22 AS builder
 
 WORKDIR /app
 
-COPY go.mod go.sum ./
-RUN go mod download
+COPY go.mod ./
+RUN go mod download || true
 
 COPY . .
 
+RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux go build -o dashboard-service .
 
 FROM ubuntu:latest
@@ -21,7 +22,6 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY --from=builder /app/dashboard-service .
-COPY --from=builder /app/assets ./assets
 
 ENV PORT=80
 ENV COUNTING_SERVICE_URL=http://localhost:9001
